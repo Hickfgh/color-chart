@@ -11,7 +11,7 @@
 </head>
 <body>
     <header class="topbar"><a class="brand" href="/">色票預約所 · 管理設定</a><a class="back" href="/admin">回管理後台</a></header>
-    <main><div class="eyebrow">STAFF ACCOUNT · READ ONLY</div><h1>工作人員共用帳號</h1><p>工作人員登入後只能查看預約資料。再次儲存會更新共用帳號與密碼。</p><form id="staff-form"><label class="field">工作人員帳號<input id="username" minlength="3" maxlength="80" required autocomplete="username"></label><label class="field">設定或更新密碼<input id="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></label><button class="primary" type="submit">儲存工作人員帳號</button><div id="status" class="status" role="status"></div><a href="/staff">開啟工作人員登入頁</a></form></main>
+    <main><div class="eyebrow">STAFF ACCOUNT · ADMIN ONLY</div><h1>工作人員共用帳號</h1><p>只有管理者可以建立或更新。工作人員無法自行註冊；登入後僅能查看預約資料。</p><form id="staff-form"><label class="field">工作人員帳號<input id="username" minlength="3" maxlength="80" required autocomplete="username"></label><label class="field">設定或更新密碼<input id="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></label><button class="primary" type="submit">儲存工作人員帳號</button><div id="status" class="status" role="status"></div><a href="/staff">開啟工作人員登入頁</a></form></main>
     <script>
         const token=sessionStorage.getItem('color-chart-admin-token')||'';
         const status=document.querySelector('#status');

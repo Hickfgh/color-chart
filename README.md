@@ -15,7 +15,17 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
 ## Gmail 通知
 
-登入後台，在「Gmail 預約通知」輸入寄件 Gmail、通知收件地址及 Google 應用程式密碼，勾選啟用後按「儲存並寄送測試信」。應用程式密碼需先開啟 Google 兩步驟驗證，再至 [Google 應用程式密碼](https://myaccount.google.com/apppasswords)建立；不可使用 Gmail 一般登入密碼。應用程式密碼以 Windows DPAPI 加密保存，伺服器必須以同一個 Windows 使用者執行。所有透過此網站預約 API 成功登記的色票都會寄通知；若寄信失敗，預約仍會保存。
+登入後台，在「Gmail 預約通知」輸入一個通知 Gmail 及其 Google 應用程式密碼，勾選啟用後按「儲存並寄送測試信」。該 Gmail 同時寄出並接收通知。應用程式密碼需先開啟 Google 兩步驟驗證，再至 [Google 應用程式密碼](https://myaccount.google.com/apppasswords)建立；不可使用 Gmail 一般登入密碼。密碼以 Windows DPAPI 加密保存。所有透過預約 API 成功登記的色票都會寄通知；若寄信失敗，預約仍會保存，詳細錯誤會記在伺服器終端。
+
+## 工作人員登入
+
+管理者登入後，從 Gmail 設定區的「設定工作人員帳號」建立或更新一組共用帳密。工作人員從 `http://localhost:8765/staff` 登入，只能查看預約資料；頁面不提供註冊，只有管理者可設定或更新帳密。工作人員忘記帳密時可按「通知管理者重設」，之後由管理者更新共用帳密。
+
+## 客戶帳號與預約
+
+客戶從首頁點選色票後會前往 `/account`。建立帳號需先用 Email 驗證碼驗證信箱；預約必須登入，每個 Email 僅能有一筆有效預約。客戶可以選擇保持登入，或在帳號頁用 Email 驗證碼重設忘記的密碼。
+
+客戶登入 `/account` 後可在「我的預約」直接取消，不需寄送取消 Email；管理者也可在後台取消。取消後色票與該帳號 Email 名額會重新開放。客戶註冊、忘記密碼及變更 Email 仍需要 Gmail 驗證信能正常寄送。
 
 ## 多人使用
 
