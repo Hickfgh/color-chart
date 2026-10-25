@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $dataDirectory = Join-Path $PSScriptRoot 'data'
 $dataFile = Join-Path $dataDirectory 'reservations.json'
 if (-not (Test-Path $dataDirectory)) { New-Item -ItemType Directory -Path $dataDirectory | Out-Null }
-if (-not (Test-Path $dataFile)) { Set-Content -Path $dataFile -Value '[]' -Encoding UTF8 }
+if (-not (Test-Path $dataFile)) { Set-Content -Path $dataFile -Value '{"reservations":[]}' -Encoding UTF8 }
 
 $adminPassword = $env:COLOR_CHART_ADMIN_PASSWORD
 if ([string]::IsNullOrWhiteSpace($adminPassword)) {
@@ -48,15 +48,17 @@ function Read-Json($Request) {
 }
 
 function Read-Reservations {
-    if (-not (Test-Path $dataFile)) { return @() }
+    if (-not (Test-Path $dataFile)) { return @{ reservations = @() } }
     $raw = Get-Content -Path $dataFile -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
-    return @(ConvertFrom-Json -InputObject $raw)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @{ reservations = @() } }
+    $parsed = ConvertFrom-Json -InputObject $raw
+    if ($parsed.PSObject.Properties['reservations']) { return $parsed }
+    return @{ reservations = @($parsed | Where-Object { $_.PSObject.Properties['colorId'] }) }
 }
 
 function Write-Reservations($Items) {
     $temporaryFile = "$dataFile.tmp"
-    ConvertTo-Json -InputObject @($Items) -Depth 8 | Set-Content -Path $temporaryFile -Encoding UTF8
+    ConvertTo-Json -InputObject @{ reservations = @($Items) } -Depth 8 | Set-Content -Path $temporaryFile -Encoding UTF8
     Move-Item -Path $temporaryFile -Destination $dataFile -Force
 }
 
@@ -75,15 +77,15 @@ while ($listener.IsListening) {
         }
 
         if ($request.HttpMethod -eq 'GET' -and $path -eq '/api/status') {
-            $reservations = Read-Reservations
-            Send-Json $context 200 @{ taken = @($reservations | ForEach-Object { $_.colorId }) }
+            $store = Read-Reservations
+            Send-Json $context 200 @{ taken = @($store.reservations | ForEach-Object { $_.colorId }) }
             continue
         }
 
         if ($request.HttpMethod -eq 'POST' -and $path -eq '/api/admin/login') {
             $body = Read-Json $request
             if (-not [string]::Equals([string]$body.password, $adminPassword, [StringComparison]::Ordinal)) {
-                Send-Json $context 401 @{ error = '管理密碼不正確。' }
+                Send-Json $context 401 @{ error = 'invalid_login' }
                 continue
             }
             $token = [Guid]::NewGuid().ToString('N')
@@ -96,11 +98,12 @@ while ($listener.IsListening) {
             $authorization = $request.Headers['Authorization']
             $token = if ($authorization -match '^Bearer (.+)$') { $Matches[1] } else { '' }
             if (-not $sessions.ContainsKey($token)) {
-                Send-Json $context 401 @{ error = '請先登入管理後台。' }
+                Send-Json $context 401 @{ error = 'login_required' }
                 continue
             }
             if ($request.HttpMethod -eq 'GET' -and $path -eq '/api/admin/reservations') {
-                $reservations = @(Read-Reservations | Sort-Object createdAt -Descending)
+                $store = Read-Reservations
+                $reservations = @($store.reservations | Sort-Object createdAt -Descending)
                 Send-Json $context 200 $reservations
                 continue
             }
@@ -112,32 +115,36 @@ while ($listener.IsListening) {
             $claimant = ([string]$body.claimant).Trim()
             $contact = ([string]$body.contact).Trim()
             if ($colorId -notmatch '^(yellow|orange|red|pink|brown|brick|cyan|blue|navy|purple|lavender|teal)-(\d+-){3}\d+$' -or [string]::IsNullOrWhiteSpace($claimant) -or $claimant.Length -gt 60 -or $contact.Length -gt 120) {
-                Send-Json $context 400 @{ error = '請提供有效的色票與名字。' }
+                Send-Json $context 400 @{ error = 'invalid_request' }
                 continue
             }
-            $reservations = @(Read-Reservations)
+            $store = Read-Reservations
+            $reservations = @($store.reservations)
             if ($reservations | Where-Object { $_.colorId -eq $colorId }) {
-                Send-Json $context 409 @{ error = '這張色票已被選走。' }
+                Send-Json $context 409 @{ error = 'already_taken' }
                 continue
             }
             $parts = $colorId -split '-'
             $categoryId = $parts[0]
             $cmyk = @([int]$parts[1], [int]$parts[2], [int]$parts[3], [int]$parts[4])
-            $group = if ($categoryId -in @('yellow', 'orange', 'red', 'pink', 'brown', 'brick')) { '暖色調' } else { '冷色調' }
-            $categories = @{ yellow='黃色系'; orange='橙色系'; red='紅色系'; pink='粉紅色系'; brown='棕色系'; brick='暖橘棕、磚紅'; cyan='青色系'; blue='藍色系'; navy='深藍色系'; purple='紫色系'; lavender='淡紫色系'; teal='青綠色系' }
+            $group = if ($categoryId -in @('yellow', 'orange', 'red', 'pink', 'brown', 'brick')) { 'warm' } else { 'cool' }
             $rgb = @($cmyk[0], $cmyk[1], $cmyk[2] | ForEach-Object { [int][Math]::Round(255 * (1 - $_ / 100) * (1 - $cmyk[3] / 100)) })
+            $red = [int][Math]::Round(255 * (1 - $cmyk[0] / 100) * (1 - $cmyk[3] / 100))
+            $green = [int][Math]::Round(255 * (1 - $cmyk[1] / 100) * (1 - $cmyk[3] / 100))
+            $blue = [int][Math]::Round(255 * (1 - $cmyk[2] / 100) * (1 - $cmyk[3] / 100))
+            $rgb = @($red, $green, $blue)
             $hex = '#' + (($rgb | ForEach-Object { $_.ToString('x2') }) -join '')
-            $record = [PSCustomObject]@{ colorId = $colorId; category = $categories[$categoryId]; group = $group; cmyk = $cmyk; hex = $hex; claimant = $claimant; contact = $contact; createdAt = [DateTime]::UtcNow.ToString('o') }
+            $record = [PSCustomObject]@{ colorId = $colorId; categoryId = $categoryId; group = $group; cmyk = $cmyk; hex = $hex; claimant = $claimant; contact = $contact; createdAt = [DateTime]::UtcNow.ToString('o') }
             Write-Reservations (@($reservations) + @($record))
             Send-Json $context 201 @{ colorId = $colorId }
             continue
         }
 
-        Send-Json $context 404 @{ error = '找不到這個頁面。' }
+        Send-Json $context 404 @{ error = 'not_found' }
     } catch {
         Write-Host "Request error: $($_.Exception.Message)" -ForegroundColor Red
         if ($context -and $context.Response.OutputStream.CanWrite) {
-            try { Send-Json $context 500 @{ error = '伺服器發生錯誤，請稍後重試。' } } catch { }
+            try { Send-Json $context 500 @{ error = 'server_error' } } catch { }
         }
     }
 }
