@@ -23,7 +23,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
 ## 客戶帳號與預約
 
-客戶從首頁點選色票後會前往 `/account`。建立帳號需先用 Email 驗證碼驗證信箱；預約必須登入，每個 Email 僅能有一筆有效預約。客戶可以選擇保持登入，或在帳號頁用 Email 驗證碼重設忘記的密碼。
+客戶從首頁點選色票後會前往 `/account`。建立帳號需先用 Email 驗證碼驗證信箱；預約必須登入，每個 Email 僅能有一筆有效預約。客戶與工作人員都可勾選保持登入，token 以 Windows DPAPI 加密保存 30 天，伺服器重啟後仍有效；登出、密碼重設或管理者更新員工密碼會撤銷舊 token。未勾選時只在目前分頁保持登入。客戶可在帳號頁用 Email 驗證碼重設忘記的密碼。
 
 客戶登入 `/account` 後可在「我的預約」直接取消，不需寄送取消 Email；管理者也可在後台取消。取消後色票與該帳號 Email 名額會重新開放。客戶註冊、忘記密碼及變更 Email 仍需要 Gmail 驗證信能正常寄送。
 

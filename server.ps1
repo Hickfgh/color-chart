@@ -426,9 +426,7 @@ while ($listener.IsListening) {
             Save-CustomerCredentials
             [void]$customerVerificationCodes.Remove($key)
             [void]$customerVerificationRequestTimes.Remove($key)
-            foreach ($sessionToken in @($sessions.Keys)) {
-                if ($sessions[$sessionToken] -eq "customer:$email") { $sessions.Remove($sessionToken) }
-            }
+            Remove-SessionsForValue "customer:$email"
             Send-Json $context 200 @{ reset = $true }
             continue
         }
@@ -526,7 +524,7 @@ while ($listener.IsListening) {
                 $account.hash = Get-PasswordHash $newPassword $saltBytes
                 Save-CustomerCredentials
                 foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessionToken -ne $customerToken -and $sessions[$sessionToken] -eq "customer:$customerEmail") { $sessions.Remove($sessionToken) }
+                    if ($sessionToken -ne $customerToken -and $sessions[$sessionToken] -eq "customer:$customerEmail") { Remove-Session $sessionToken }
                 }
                 Send-Json $context 200 @{ changed = $true }
                 continue
@@ -597,6 +595,7 @@ while ($listener.IsListening) {
                     Send-Json $context 400 @{ error = 'invalid_or_expired_code' }
                     continue
                 }
+                $rememberCurrentSession = $rememberedSessions.ContainsKey($customerToken)
                 $account = $customerAccounts[$oldEmail]
                 [void]$customerAccounts.Remove($oldEmail)
                 $account.email = $newEmail
@@ -608,11 +607,8 @@ while ($listener.IsListening) {
                 Save-CustomerCredentials
                 [void]$customerVerificationCodes.Remove($codeKey)
                 [void]$customerVerificationRequestTimes.Remove($codeKey)
-                foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessions[$sessionToken] -eq "customer:$oldEmail") { $sessions.Remove($sessionToken) }
-                }
-                $newToken = [Guid]::NewGuid().ToString('N')
-                $sessions[$newToken] = "customer:$newEmail"
+                Remove-SessionsForValue "customer:$oldEmail"
+                $newToken = New-Session "customer:$newEmail" $rememberCurrentSession
                 Send-Json $context 200 @{ token = $newToken; email = $newEmail; nickname = $account.nickname }
                 continue
             }
@@ -746,7 +742,7 @@ while ($listener.IsListening) {
                 $staffHash = Get-PasswordHash $password $saltBytes
                 Save-StaffCredentials
                 foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessions[$sessionToken] -eq 'staff') { $sessions.Remove($sessionToken) }
+                    if ($sessions[$sessionToken] -eq 'staff') { Remove-Session $sessionToken }
                 }
                 Send-Json $context 200 @{ saved = $true; username = $staffUsername }
                 continue
