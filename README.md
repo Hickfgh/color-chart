@@ -11,7 +11,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 .\server.ps1
 ```
 
-開啟 `http://localhost:8765`。第一次啟動時，管理密碼會顯示在 PowerShell 視窗中：複製該密碼，到 `http://localhost:8765/admin` 登入，再於頁面下方的「修改管理密碼」設定新密碼。新密碼至少 12 個字元，儲存後重啟伺服器仍會保留。預約資料儲存在 `data/reservations.json`，密碼雜湊儲存在 `data/admin-credentials.json`。
+開啟 `http://localhost:8765/admin`，第一次使用時直接建立管理帳號和密碼。帳號只能註冊一次；新密碼至少 12 個字元。之後從同一頁登入，登入後可在頁面下方修改密碼。管理帳密以雜湊保存於 `data/admin-credentials.json`，預約資料保存於 `data/reservations.json`；重啟伺服器後兩者都會保留。
+
+## Gmail 通知
+
+登入後台，在「Gmail 預約通知」輸入寄件 Gmail、通知收件地址及 Google 應用程式密碼，勾選啟用後按「儲存並寄送測試信」。應用程式密碼需先開啟 Google 兩步驟驗證，再至 [Google 應用程式密碼](https://myaccount.google.com/apppasswords)建立；不可使用 Gmail 一般登入密碼。應用程式密碼以 Windows DPAPI 加密保存，伺服器必須以同一個 Windows 使用者執行。所有透過此網站預約 API 成功登記的色票都會寄通知；若寄信失敗，預約仍會保存。
 
 ## 多人使用
 

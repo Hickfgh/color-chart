@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工作人員帳號設定 | 色票預約所</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;600;700&display=swap');
+        :root{--paper:#f5f2ec;--ink:#24241f;--muted:#77766e;--line:#d8d4ca;--red:#c84b32;--sans:'Noto Sans TC',sans-serif;--mono:'DM Mono',monospace}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px var(--sans)}.topbar{height:58px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 5vw;background:#f8f6f1}.brand{font-weight:700;text-decoration:none;color:inherit}main{max-width:700px;margin:auto;padding:40px 5vw}.eyebrow{font:11px var(--mono);color:var(--red)}h1{font-size:30px;margin:8px 0}p{color:var(--muted)}form{max-width:400px;display:grid;gap:14px;margin-top:24px}.field{display:grid;gap:7px;font-size:12px}.field input{padding:11px;border:1px solid var(--line);background:#fbfaf7}.primary{border:0;padding:12px;background:var(--ink);color:white;cursor:pointer}.status{min-height:18px;color:var(--red);font-size:12px}.back{font-size:12px}@media(max-width:600px){main{padding:30px 18px}.topbar{padding:0 18px}h1{font-size:26px}}
+    </style>
+</head>
+<body>
+    <header class="topbar"><a class="brand" href="/">色票預約所 · 管理設定</a><a class="back" href="/admin">回管理後台</a></header>
+    <main><div class="eyebrow">STAFF ACCOUNT · READ ONLY</div><h1>工作人員共用帳號</h1><p>工作人員登入後只能查看預約資料。再次儲存會更新共用帳號與密碼。</p><form id="staff-form"><label class="field">工作人員帳號<input id="username" minlength="3" maxlength="80" required autocomplete="username"></label><label class="field">設定或更新密碼<input id="password" type="password" minlength="12" maxlength="256" required autocomplete="new-password"></label><button class="primary" type="submit">儲存工作人員帳號</button><div id="status" class="status" role="status"></div><a href="/staff">開啟工作人員登入頁</a></form></main>
+    <script>
+        const token=sessionStorage.getItem('color-chart-admin-token')||'';
+        const status=document.querySelector('#status');
+        if(!token){location.replace('/admin');}
+        else{fetch('/api/admin/staff-account',{headers:{Authorization:`Bearer ${token}`}}).then(async response=>{if(response.status===401){location.replace('/admin');return;}if(!response.ok)throw new Error();const data=await response.json();if(data.configured)document.querySelector('#username').value=data.username||'';}).catch(()=>{status.textContent='無法載入帳號狀態，請重新登入管理後台。';});}
+        document.querySelector('#staff-form').addEventListener('submit',async event=>{event.preventDefault();status.textContent='儲存中…';try{const response=await fetch('/api/admin/staff-account',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({username:document.querySelector('#username').value.trim(),password:document.querySelector('#password').value})});const data=await response.json();if(!response.ok)throw new Error(data.error==='invalid_credentials'?'帳號至少 3 個字元，密碼至少 12 個字元。':'儲存失敗，請重新登入後再試。');document.querySelector('#password').value='';status.textContent='工作人員帳號已儲存。';}catch(error){status.textContent=error.message;}});
+    </script>
+</body>
+</html>
