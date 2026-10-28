@@ -35,8 +35,6 @@ if (Test-Path $staffCredentialFile) {
 }
 
 $sessions = @{}
-$rememberedSessions = @{}
-$sessionsFile = Join-Path $dataDirectory 'remembered-sessions.dat'
 $staffRecoveryRequestTimes = @{}
 $customerVerificationCodes = @{}
 $customerVerificationRequestTimes = @{}
@@ -187,78 +185,7 @@ function Save-CustomerCredentials {
     Move-Item -Path $temporaryFile -Destination $customerCredentialFile -Force
 }
 
-function Save-RememberedSessions {
-    $json = ConvertTo-Json -InputObject @{ sessions = @($rememberedSessions.Values) } -Depth 5 -Compress
-    $plainBytes = [Text.Encoding]::UTF8.GetBytes($json)
-    $entropy = [Text.Encoding]::UTF8.GetBytes('ColorChart.RememberedSessions.v1')
-    $encrypted = [Security.Cryptography.ProtectedData]::Protect($plainBytes, $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-    $temporaryFile = "$sessionsFile.tmp"
-    [Convert]::ToBase64String($encrypted) | Set-Content -Path $temporaryFile -Encoding ASCII
-    Move-Item -Path $temporaryFile -Destination $sessionsFile -Force
-}
-
-function Restore-RememberedSessions {
-    if (-not (Test-Path $sessionsFile)) { return }
-    try {
-        $encrypted = [Convert]::FromBase64String((Get-Content -Path $sessionsFile -Raw -Encoding ASCII).Trim())
-        $entropy = [Text.Encoding]::UTF8.GetBytes('ColorChart.RememberedSessions.v1')
-        $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect($encrypted, $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-        $saved = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString($plainBytes))
-        foreach ($record in @($saved.sessions)) {
-            if ([DateTime]::Parse([string]$record.expiresAt).ToUniversalTime() -gt [DateTime]::UtcNow) {
-                $sessions[[string]$record.token] = [string]$record.value
-                $rememberedSessions[[string]$record.token] = $record
-            }
-        }
-    } catch {
-        Write-Host 'Remembered sign-in data could not be restored; sign in again.' -ForegroundColor Yellow
-    }
-}
-
-function New-Session([string]$Value, [bool]$Remember = $false) {
-    $token = [Guid]::NewGuid().ToString('N')
-    $sessions[$token] = $Value
-    if ($Remember) {
-        $record = [PSCustomObject]@{ token = $token; value = $Value; expiresAt = [DateTime]::UtcNow.AddDays(30).ToString('o') }
-        $rememberedSessions[$token] = $record
-        Save-RememberedSessions
-    }
-    return $token
-}
-
-function Get-SessionValue([string]$Token) {
-    if (-not $Token -or -not $sessions.ContainsKey($Token)) { return '' }
-    if ($rememberedSessions.ContainsKey($Token) -and [DateTime]::Parse([string]$rememberedSessions[$Token].expiresAt).ToUniversalTime() -le [DateTime]::UtcNow) {
-        [void]$sessions.Remove($Token)
-        [void]$rememberedSessions.Remove($Token)
-        Save-RememberedSessions
-        return ''
-    }
-    return [string]$sessions[$Token]
-}
-
-function Remove-Session([string]$Token) {
-    [void]$sessions.Remove($Token)
-    if ($rememberedSessions.ContainsKey($Token)) {
-        [void]$rememberedSessions.Remove($Token)
-        Save-RememberedSessions
-    }
-}
-
-function Remove-SessionsForValue([string]$Value) {
-    foreach ($sessionToken in @($sessions.Keys)) {
-        if ($sessions[$sessionToken] -eq $Value) { Remove-Session $sessionToken }
-    }
-}
-
-Restore-RememberedSessions
-
 while ($listener.IsListening) {
-    foreach ($sessionToken in @($rememberedSessions.Keys)) {
-        if ([DateTime]::Parse([string]$rememberedSessions[$sessionToken].expiresAt).ToUniversalTime() -le [DateTime]::UtcNow) {
-            Remove-Session $sessionToken
-        }
-    }
     $context = $null
     try {
         $context = $listener.GetContext()
@@ -379,7 +306,8 @@ while ($listener.IsListening) {
             Save-CustomerCredentials
             [void]$customerVerificationCodes.Remove($key)
             [void]$customerVerificationRequestTimes.Remove($key)
-            $token = New-Session "customer:$email" ([bool]$body.remember)
+            $token = [Guid]::NewGuid().ToString('N')
+            $sessions[$token] = "customer:$email"
             Send-Json $context 201 @{ token = $token; email = $email; nickname = $nickname }
             continue
         }
@@ -392,7 +320,8 @@ while ($listener.IsListening) {
                 continue
             }
             $account = $customerAccounts[$email]
-            $token = New-Session "customer:$email" ([bool]$body.remember)
+            $token = [Guid]::NewGuid().ToString('N')
+            $sessions[$token] = "customer:$email"
             Send-Json $context 200 @{ token = $token; email = $email; nickname = $account.nickname }
             continue
         }
@@ -426,7 +355,9 @@ while ($listener.IsListening) {
             Save-CustomerCredentials
             [void]$customerVerificationCodes.Remove($key)
             [void]$customerVerificationRequestTimes.Remove($key)
-            Remove-SessionsForValue "customer:$email"
+            foreach ($sessionToken in @($sessions.Keys)) {
+                if ($sessions[$sessionToken] -eq "customer:$email") { $sessions.Remove($sessionToken) }
+            }
             Send-Json $context 200 @{ reset = $true }
             continue
         }
@@ -441,18 +372,6 @@ while ($listener.IsListening) {
             $email = $sessions[$token].Substring(9)
             $account = $customerAccounts[$email]
             Send-Json $context 200 @{ email = $account.email; nickname = $account.nickname }
-            continue
-        }
-
-        if ($request.HttpMethod -eq 'POST' -and $path -eq '/api/customer/logout') {
-            $authorization = $request.Headers['Authorization']
-            $token = if ($authorization -match '^Bearer (.+)$') { $Matches[1] } else { '' }
-            if (-not $sessions.ContainsKey($token) -or $sessions[$token] -notlike 'customer:*') {
-                Send-Json $context 401 @{ error = 'customer_login_required' }
-                continue
-            }
-            Remove-Session $token
-            Send-Json $context 200 @{ loggedOut = $true }
             continue
         }
 
@@ -524,7 +443,7 @@ while ($listener.IsListening) {
                 $account.hash = Get-PasswordHash $newPassword $saltBytes
                 Save-CustomerCredentials
                 foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessionToken -ne $customerToken -and $sessions[$sessionToken] -eq "customer:$customerEmail") { Remove-Session $sessionToken }
+                    if ($sessionToken -ne $customerToken -and $sessions[$sessionToken] -eq "customer:$customerEmail") { $sessions.Remove($sessionToken) }
                 }
                 Send-Json $context 200 @{ changed = $true }
                 continue
@@ -595,7 +514,6 @@ while ($listener.IsListening) {
                     Send-Json $context 400 @{ error = 'invalid_or_expired_code' }
                     continue
                 }
-                $rememberCurrentSession = $rememberedSessions.ContainsKey($customerToken)
                 $account = $customerAccounts[$oldEmail]
                 [void]$customerAccounts.Remove($oldEmail)
                 $account.email = $newEmail
@@ -607,8 +525,11 @@ while ($listener.IsListening) {
                 Save-CustomerCredentials
                 [void]$customerVerificationCodes.Remove($codeKey)
                 [void]$customerVerificationRequestTimes.Remove($codeKey)
-                Remove-SessionsForValue "customer:$oldEmail"
-                $newToken = New-Session "customer:$newEmail" $rememberCurrentSession
+                foreach ($sessionToken in @($sessions.Keys)) {
+                    if ($sessions[$sessionToken] -eq "customer:$oldEmail") { $sessions.Remove($sessionToken) }
+                }
+                $newToken = [Guid]::NewGuid().ToString('N')
+                $sessions[$newToken] = "customer:$newEmail"
                 Send-Json $context 200 @{ token = $newToken; email = $newEmail; nickname = $account.nickname }
                 continue
             }
@@ -660,20 +581,9 @@ while ($listener.IsListening) {
                 Send-Json $context 401 @{ error = 'invalid_login' }
                 continue
             }
-            $token = New-Session 'staff' ([bool]$body.remember)
+            $token = [Guid]::NewGuid().ToString('N')
+            $sessions[$token] = 'staff'
             Send-Json $context 200 @{ token = $token }
-            continue
-        }
-
-        if ($request.HttpMethod -eq 'POST' -and $path -eq '/api/staff/logout') {
-            $authorization = $request.Headers['Authorization']
-            $token = if ($authorization -match '^Bearer (.+)$') { $Matches[1] } else { '' }
-            if ((Get-SessionValue $token) -ne 'staff') {
-                Send-Json $context 401 @{ error = 'staff_login_required' }
-                continue
-            }
-            Remove-Session $token
-            Send-Json $context 200 @{ loggedOut = $true }
             continue
         }
 
@@ -742,7 +652,7 @@ while ($listener.IsListening) {
                 $staffHash = Get-PasswordHash $password $saltBytes
                 Save-StaffCredentials
                 foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessions[$sessionToken] -eq 'staff') { Remove-Session $sessionToken }
+                    if ($sessions[$sessionToken] -eq 'staff') { $sessions.Remove($sessionToken) }
                 }
                 Send-Json $context 200 @{ saved = $true; username = $staffUsername }
                 continue
