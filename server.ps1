@@ -9,6 +9,8 @@ $dataFile = Join-Path $dataDirectory 'reservations.json'
 $credentialFile = Join-Path $dataDirectory 'admin-credentials.json'
 $staffCredentialFile = Join-Path $dataDirectory 'staff-credentials.json'
 $customerCredentialFile = Join-Path $dataDirectory 'customer-credentials.json'
+$customerVerificationFile = Join-Path $dataDirectory 'customer-verification-codes.json'
+$customerSessionFile = Join-Path $dataDirectory 'customer-sessions.json'
 $gmailSettingsFile = Join-Path $dataDirectory 'gmail-settings.json'
 $ownerUsername = 'a0985577822@gmail.com'
 if (-not (Test-Path $dataDirectory)) { New-Item -ItemType Directory -Path $dataDirectory | Out-Null }
@@ -35,9 +37,25 @@ if (Test-Path $staffCredentialFile) {
 }
 
 $sessions = @{}
+$persistentCustomerSessions = @{}
+if (Test-Path $customerSessionFile) {
+    $savedSessions = Get-Content -Path $customerSessionFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($savedSession in @($savedSessions.sessions)) {
+        if ([DateTime]::UtcNow -lt [DateTime]$savedSession.expiresAt) {
+            $sessions[[string]$savedSession.token] = [string]$savedSession.subject
+            $persistentCustomerSessions[[string]$savedSession.token] = $true
+        }
+    }
+}
 $staffRecoveryRequestTimes = @{}
 $customerVerificationCodes = @{}
 $customerVerificationRequestTimes = @{}
+if (Test-Path $customerVerificationFile) {
+    $savedVerification = Get-Content -Path $customerVerificationFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($item in @($savedVerification.codes)) {
+        if ([DateTime]::UtcNow -lt [DateTime]$item.expiresAt) { $customerVerificationCodes[[string]$item.key] = $item.value }
+    }
+}
 $customerAccounts = @{}
 if (Test-Path $customerCredentialFile) {
     $savedCustomerCredentials = Get-Content -Path $customerCredentialFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -185,6 +203,30 @@ function Save-CustomerCredentials {
     Move-Item -Path $temporaryFile -Destination $customerCredentialFile -Force
 }
 
+function Save-CustomerSessions {
+    $temporaryFile = "$customerSessionFile.tmp"
+    $records = @($persistentCustomerSessions.Keys | ForEach-Object { [PSCustomObject]@{ token = $_; subject = $sessions[$_]; expiresAt = [DateTime]::UtcNow.AddDays(30).ToString('o') } })
+    ConvertTo-Json -InputObject @{ sessions = $records } -Depth 4 | Set-Content -Path $temporaryFile -Encoding UTF8
+    Move-Item -Path $temporaryFile -Destination $customerSessionFile -Force
+}
+
+function New-CustomerSession([string]$Email, [bool]$Remember) {
+    $token = [Guid]::NewGuid().ToString('N')
+    $sessions[$token] = "customer:$Email"
+    if ($Remember) {
+        $persistentCustomerSessions[$token] = $true
+        Save-CustomerSessions
+    }
+    return $token
+}
+
+function Save-CustomerVerificationCodes {
+    $temporaryFile = "$customerVerificationFile.tmp"
+    $records = @($customerVerificationCodes.Keys | ForEach-Object { [PSCustomObject]@{ key = $_; value = $customerVerificationCodes[$_] } })
+    ConvertTo-Json -InputObject @{ codes = $records } -Depth 6 | Set-Content -Path $temporaryFile -Encoding UTF8
+    Move-Item -Path $temporaryFile -Destination $customerVerificationFile -Force
+}
+
 while ($listener.IsListening) {
     $context = $null
     try {
@@ -261,6 +303,7 @@ while ($listener.IsListening) {
             try {
                 Send-GmailMessage $settings $subject $message $email
                 $customerVerificationCodes[$key] = @{ hash = (Get-CancellationCodeHash $email $code $salt); salt = $salt; expiresAt = [DateTime]::UtcNow.AddMinutes(10); attempts = 0 }
+                Save-CustomerVerificationCodes
                 $customerVerificationRequestTimes[$key] = [DateTime]::UtcNow.AddSeconds(60)
                 Send-Json $context 202 @{ sent = $true }
             } catch {
@@ -295,6 +338,7 @@ while ($listener.IsListening) {
             if ([DateTime]::UtcNow -gt $verification.expiresAt -or -not [string]::Equals((Get-CancellationCodeHash $email $code $verification.salt), $verification.hash, [StringComparison]::Ordinal)) {
                 $verification.attempts++
                 if ($verification.attempts -ge 5) { [void]$customerVerificationCodes.Remove($key) }
+                Save-CustomerVerificationCodes
                 Send-Json $context 400 @{ error = 'invalid_or_expired_code' }
                 continue
             }
@@ -306,8 +350,8 @@ while ($listener.IsListening) {
             Save-CustomerCredentials
             [void]$customerVerificationCodes.Remove($key)
             [void]$customerVerificationRequestTimes.Remove($key)
-            $token = [Guid]::NewGuid().ToString('N')
-            $sessions[$token] = "customer:$email"
+            Save-CustomerVerificationCodes
+            $token = New-CustomerSession $email ([bool]$body.remember)
             Send-Json $context 201 @{ token = $token; email = $email; nickname = $nickname }
             continue
         }
@@ -320,8 +364,7 @@ while ($listener.IsListening) {
                 continue
             }
             $account = $customerAccounts[$email]
-            $token = [Guid]::NewGuid().ToString('N')
-            $sessions[$token] = "customer:$email"
+            $token = New-CustomerSession $email ([bool]$body.remember)
             Send-Json $context 200 @{ token = $token; email = $email; nickname = $account.nickname }
             continue
         }
@@ -356,8 +399,9 @@ while ($listener.IsListening) {
             [void]$customerVerificationCodes.Remove($key)
             [void]$customerVerificationRequestTimes.Remove($key)
             foreach ($sessionToken in @($sessions.Keys)) {
-                if ($sessions[$sessionToken] -eq "customer:$email") { $sessions.Remove($sessionToken) }
+                    if ($sessions[$sessionToken] -eq "customer:$email") { $sessions.Remove($sessionToken); [void]$persistentCustomerSessions.Remove($sessionToken) }
             }
+                Save-CustomerSessions
             Send-Json $context 200 @{ reset = $true }
             continue
         }
@@ -405,7 +449,7 @@ while ($listener.IsListening) {
             }
         }
 
-        if ($path -in @('/api/customer/profile', '/api/customer/change-password')) {
+        if ($path -in @('/api/customer/profile', '/api/customer/change-password', '/api/customer/logout')) {
             $authorization = $request.Headers['Authorization']
             $customerToken = if ($authorization -match '^Bearer (.+)$') { $Matches[1] } else { '' }
             if (-not $sessions.ContainsKey($customerToken) -or $sessions[$customerToken] -notlike 'customer:*') {
@@ -414,6 +458,13 @@ while ($listener.IsListening) {
             }
             $customerEmail = $sessions[$customerToken].Substring(9)
             $account = $customerAccounts[$customerEmail]
+            if ($request.HttpMethod -eq 'POST' -and $path -eq '/api/customer/logout') {
+                $sessions.Remove($customerToken)
+                [void]$persistentCustomerSessions.Remove($customerToken)
+                Save-CustomerSessions
+                Send-Json $context 200 @{ loggedOut = $true }
+                continue
+            }
             $body = Read-Json $request
             if ($request.HttpMethod -eq 'POST' -and $path -eq '/api/customer/profile') {
                 $nickname = ([string]$body.nickname).Trim()
@@ -443,8 +494,9 @@ while ($listener.IsListening) {
                 $account.hash = Get-PasswordHash $newPassword $saltBytes
                 Save-CustomerCredentials
                 foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessionToken -ne $customerToken -and $sessions[$sessionToken] -eq "customer:$customerEmail") { $sessions.Remove($sessionToken) }
+                    if ($sessionToken -ne $customerToken -and $sessions[$sessionToken] -eq "customer:$customerEmail") { $sessions.Remove($sessionToken); [void]$persistentCustomerSessions.Remove($sessionToken) }
                 }
+                Save-CustomerSessions
                 Send-Json $context 200 @{ changed = $true }
                 continue
             }
@@ -493,6 +545,7 @@ while ($listener.IsListening) {
                 try {
                     Send-GmailMessage $settings 'Email change verification code' "Your email change verification code is $code. It expires in 10 minutes." $newEmail
                     $customerVerificationCodes[$codeKey] = @{ hash = (Get-CancellationCodeHash $newEmail $code $salt); salt = $salt; expiresAt = [DateTime]::UtcNow.AddMinutes(10); attempts = 0 }
+                    Save-CustomerVerificationCodes
                     $customerVerificationRequestTimes[$codeKey] = [DateTime]::UtcNow.AddSeconds(60)
                     Send-Json $context 202 @{ sent = $true }
                 } catch {
@@ -511,6 +564,7 @@ while ($listener.IsListening) {
                 if ([DateTime]::UtcNow -gt $verification.expiresAt -or -not [string]::Equals((Get-CancellationCodeHash $newEmail $code $verification.salt), $verification.hash, [StringComparison]::Ordinal)) {
                     $verification.attempts++
                     if ($verification.attempts -ge 5) { [void]$customerVerificationCodes.Remove($codeKey) }
+                    Save-CustomerVerificationCodes
                     Send-Json $context 400 @{ error = 'invalid_or_expired_code' }
                     continue
                 }
@@ -525,9 +579,11 @@ while ($listener.IsListening) {
                 Save-CustomerCredentials
                 [void]$customerVerificationCodes.Remove($codeKey)
                 [void]$customerVerificationRequestTimes.Remove($codeKey)
+                Save-CustomerVerificationCodes
                 foreach ($sessionToken in @($sessions.Keys)) {
-                    if ($sessions[$sessionToken] -eq "customer:$oldEmail") { $sessions.Remove($sessionToken) }
+                    if ($sessions[$sessionToken] -eq "customer:$oldEmail") { $sessions.Remove($sessionToken); [void]$persistentCustomerSessions.Remove($sessionToken) }
                 }
+                Save-CustomerSessions
                 $newToken = [Guid]::NewGuid().ToString('N')
                 $sessions[$newToken] = "customer:$newEmail"
                 Send-Json $context 200 @{ token = $newToken; email = $newEmail; nickname = $account.nickname }
